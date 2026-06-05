@@ -344,6 +344,115 @@
     .obs-btn:hover { background: #4f52d9; }
     .obs-btn:disabled { opacity: 0.5; cursor: not-allowed; }
     .obs-error { font-size: 12px; color: #f87171; margin-top: 6px; min-height: 16px; }
+
+    /* ── Field signal & AI card ── */
+    .field-signal-textarea {
+      width: 100%;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 10px 12px;
+      border-radius: 7px;
+      font-size: 14px;
+      font-family: inherit;
+      outline: none;
+      resize: none;
+      margin-bottom: 8px;
+    }
+    .field-signal-textarea:focus { border-color: var(--accent); }
+    .field-signal-btn {
+      width: 100%;
+      background: #6d28d9;
+      border: none;
+      color: #fff;
+      padding: 9px;
+      border-radius: 7px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      letter-spacing: 0.2px;
+    }
+    .field-signal-btn:hover { background: #5b21b6; }
+    .field-signal-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .ai-card {
+      margin-top: 14px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    .ai-disclaimer {
+      background: rgba(234,179,8,0.12);
+      border-bottom: 1px solid rgba(234,179,8,0.25);
+      padding: 8px 12px;
+      font-size: 11px;
+      font-weight: 700;
+      color: #eab308;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .ai-body { padding: 14px; }
+    .ai-section { margin-bottom: 14px; }
+    .ai-section:last-child { margin-bottom: 0; }
+    .ai-label {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.7px;
+      color: var(--muted);
+      margin-bottom: 5px;
+    }
+    .ai-action {
+      background: rgba(99,102,241,0.1);
+      border: 1px solid rgba(99,102,241,0.3);
+      border-radius: 7px;
+      padding: 10px 12px;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .ai-list { list-style: none; padding: 0; margin: 0; }
+    .ai-list li { font-size: 13px; padding: 3px 0 3px 14px; position: relative; }
+    .ai-list li::before { content: '•'; position: absolute; left: 2px; color: var(--muted); }
+    .ai-confidence {
+      background: rgba(255,255,255,0.03);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 10px;
+      font-size: 12px;
+      color: var(--muted);
+      font-style: italic;
+    }
+    .ai-badges { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+
+    /* ── Closure ── */
+    .closure-status-msg { font-size: 13px; margin-bottom: 8px; }
+    .closure-q { font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+    .closure-btns { display: flex; gap: 8px; }
+    .closure-btn {
+      flex: 1;
+      padding: 7px 6px;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      background: transparent;
+      color: var(--text);
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.12s;
+    }
+    .closure-btn.r:hover, .closure-btn.r.active { border-color: #22c55e; color: #22c55e; background: rgba(34,197,94,0.1); }
+    .closure-btn.s:hover, .closure-btn.s.active { border-color: #f97316; color: #f97316; background: rgba(249,115,22,0.1); }
+    .closure-btn.w:hover, .closure-btn.w.active { border-color: #ef4444; color: #ef4444; background: rgba(239,68,68,0.1); }
+    .closure-dot {
+      display: inline-block;
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      margin-left: 5px;
+      vertical-align: middle;
+    }
+    .closure-dot.resolved     { background: #22c55e; }
+    .closure-dot.still-happening { background: #f97316; }
+    .closure-dot.worse        { background: #ef4444; }
   </style>
 </head>
 <body>
@@ -436,6 +545,14 @@
   let selectedId = null;
   let allSignals = [];
   let signalsByWoId = {};
+  let closures = {};   // { [workOrderId]: 'resolved'|'still-happening'|'worse' }
+
+  async function loadClosures() {
+    try {
+      const res = await fetch('/api/closures');
+      if (res.ok) closures = await res.json();
+    } catch (_) {}
+  }
 
   function buildSignalMap() {
     signalsByWoId = {};
@@ -595,6 +712,7 @@
           ${escHtml(wo.title || '—')}
           ${overdue ? '<span class="overdue-badge">OVERDUE</span>' : ''}
           ${(signalsByWoId[wo.id] || []).length ? `<span class="signal-badge">&#9679; ${signalsByWoId[wo.id].length}</span>` : ''}
+          ${closures[wo.id] ? `<span class="closure-dot ${closures[wo.id]}" title="${closures[wo.id]}"></span>` : ''}
         </td>
         <td><span class="status ${stCls}">${escHtml(wo.status || '—')}</span></td>
         <td><span class="priority ${priNorm}">${escHtml(wo.priority || '—')}</span></td>
@@ -669,6 +787,14 @@
         </div>
         <div class="obs-error" id="obs-error"></div>
       </div>
+
+      <div class="detail-section">
+        <h3>Field Signal <span style="font-size:10px;font-weight:400;color:var(--muted);text-transform:none;letter-spacing:0">— AI-assisted triage</span></h3>
+        <textarea class="field-signal-textarea" id="fs-input" rows="3"
+          placeholder="What did you experience? (one sentence is enough)"></textarea>
+        <button class="field-signal-btn" id="fs-btn">Analyze with AI</button>
+        <div id="fs-result"></div>
+      </div>
     `;
 
     document.getElementById('obs-list').innerHTML = obsListHtml(wo.id);
@@ -679,6 +805,10 @@
     const errEl  = document.getElementById('obs-error');
     btn.addEventListener('click', () => submitSignal(wo.id, input, btn, errEl));
     input.addEventListener('keydown', e => { if (e.key === 'Enter') btn.click(); });
+
+    const fsInput = document.getElementById('fs-input');
+    const fsBtn   = document.getElementById('fs-btn');
+    fsBtn.addEventListener('click', () => submitFieldSignal(wo, fsInput, document.getElementById('fs-result'), fsBtn));
   }
 
   async function submitSignal(workOrderId, input, btn, errEl) {
@@ -711,6 +841,119 @@
     }
   }
 
+  // ── AI field signal ───────────────────────────────────────
+
+  function renderAiCard(s, woId) {
+    const sevCls = { critical:'CRITICAL', high:'HIGH', medium:'MEDIUM', low:'LOW' }[s.severity?.toLowerCase()] || 'LOW';
+    const urgCls = { immediate:'CRITICAL', 'within-24h':'HIGH', 'within-week':'MEDIUM', routine:'LOW' }[s.urgency] || 'LOW';
+    const rootCauses = (s.likelyRootCauses || []).map(c => `<li>${escHtml(c)}</li>`).join('');
+    const missing    = (s.missingInformation || []).map(m => `<li>${escHtml(m)}</li>`).join('');
+    const followUps  = (s.followUpQuestions || []).map(q => `<li>${escHtml(q)}</li>`).join('');
+    const cur = closures[woId] || '';
+
+    return `<div class="ai-card">
+      <div class="ai-disclaimer">&#9888; AI-generated draft — review before acting</div>
+      <div class="ai-body">
+
+        <div class="ai-badges">
+          <span class="priority ${sevCls}">Severity: ${escHtml(s.severity || '—')}</span>
+          <span class="priority ${urgCls}">Urgency: ${escHtml(s.urgency || '—')}</span>
+          ${s.evidenceQuality ? `<span class="status PENDING">Evidence: ${escHtml(s.evidenceQuality)}</span>` : ''}
+        </div>
+
+        <div class="ai-section">
+          <div class="ai-label">Issue</div>
+          <div style="font-size:13px"><strong>${escHtml(s.issueType||'—')}</strong> · ${escHtml(s.location||'—')} · ${escHtml(s.assetCategory||'—')}</div>
+          ${s.affectedUsers ? `<div style="font-size:12px;color:var(--muted);margin-top:3px">Affected: ${escHtml(s.affectedUsers)}</div>` : ''}
+        </div>
+
+        <div class="ai-section">
+          <div class="ai-label">Suggested Next Action</div>
+          <div class="ai-action">${escHtml(s.suggestedNextAction||'—')}</div>
+        </div>
+
+        ${rootCauses ? `<div class="ai-section"><div class="ai-label">Likely Root Causes</div><ul class="ai-list">${rootCauses}</ul></div>` : ''}
+        ${missing    ? `<div class="ai-section"><div class="ai-label">Missing Information</div><ul class="ai-list">${missing}</ul></div>` : ''}
+        ${s.complianceImplications ? `<div class="ai-section"><div class="ai-label">Compliance</div><div style="font-size:13px">${escHtml(s.complianceImplications)}</div></div>` : ''}
+        ${followUps  ? `<div class="ai-section"><div class="ai-label">Follow-up Questions</div><ul class="ai-list">${followUps}</ul></div>` : ''}
+
+        <div class="ai-section">
+          <div class="ai-label">Confidence Note</div>
+          <div class="ai-confidence">${escHtml(s.confidenceNote||'—')}</div>
+        </div>
+
+        <div class="ai-section" style="border-top:1px solid var(--border);padding-top:14px;margin-top:4px">
+          <div class="ai-label">Field Verification</div>
+          ${s.studentStatusMessage ? `<div class="closure-status-msg">${escHtml(s.studentStatusMessage)}</div>` : ''}
+          <div class="closure-q">${escHtml(s.closureVerificationQuestion||'Has this issue been resolved?')}</div>
+          <div class="closure-btns">
+            <button class="closure-btn r ${cur==='resolved'?'active':''}" id="cl-resolved">Resolved</button>
+            <button class="closure-btn s ${cur==='still-happening'?'active':''}" id="cl-still-happening">Still happening</button>
+            <button class="closure-btn w ${cur==='worse'?'active':''}" id="cl-worse">Worse</button>
+          </div>
+        </div>
+
+      </div>
+    </div>`;
+  }
+
+  async function submitFieldSignal(wo, input, resultEl, btn) {
+    const observation = input.value.trim();
+    if (!observation) {
+      resultEl.innerHTML = '<p style="color:#f87171;font-size:12px;margin-top:8px">Please describe what you observed.</p>';
+      return;
+    }
+    btn.disabled = true;
+    btn.textContent = 'Analyzing…';
+    resultEl.innerHTML = '<div style="text-align:center;padding:20px;color:var(--muted)"><div class="spinner" style="margin:0 auto 8px"></div><p style="font-size:13px">AI is processing…</p></div>';
+
+    try {
+      const res = await fetch('/api/structure-signal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workOrder: wo, observation }),
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        resultEl.innerHTML = `<p style="color:#f87171;font-size:12px;margin-top:8px">${escHtml(data.error||'Error')}</p>`;
+        return;
+      }
+      if (!data.ok) {
+        resultEl.innerHTML = `<div class="ai-card"><div class="ai-disclaimer">&#9888; AI response was not valid JSON</div><div class="ai-body"><pre style="font-size:11px;white-space:pre-wrap;color:var(--muted)">${escHtml(data.raw||'')}</pre></div></div>`;
+        return;
+      }
+
+      resultEl.innerHTML = renderAiCard(data.structured, wo.id);
+
+      document.getElementById('cl-resolved')      ?.addEventListener('click', () => submitClosure(wo.id, 'resolved'));
+      document.getElementById('cl-still-happening')?.addEventListener('click', () => submitClosure(wo.id, 'still-happening'));
+      document.getElementById('cl-worse')          ?.addEventListener('click', () => submitClosure(wo.id, 'worse'));
+    } catch (err) {
+      resultEl.innerHTML = `<p style="color:#f87171;font-size:12px;margin-top:8px">Network error: ${escHtml(err.message)}</p>`;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Analyze with AI';
+    }
+  }
+
+  async function submitClosure(workOrderId, status) {
+    try {
+      const res = await fetch('/api/closure', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workOrderId, status }),
+      });
+      if (!res.ok) return;
+      closures[workOrderId] = status;
+      ['resolved','still-happening','worse'].forEach(s => {
+        const el = document.getElementById(`cl-${s}`);
+        if (el) el.classList.toggle('active', s === status);
+      });
+      renderTable();
+    } catch (_) {}
+  }
+
   function closePanel() {
     selectedId = null;
     document.getElementById('detail-overlay').classList.remove('open');
@@ -738,7 +981,7 @@
       }
       const data = await res.json();
       allOrders = data.map(normalizeWorkOrder);
-      await loadSignals();
+      await Promise.all([loadSignals(), loadClosures()]);
 
       updateCounters(allOrders);
       populateFilters(allOrders);

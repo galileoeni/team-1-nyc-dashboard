@@ -9,9 +9,30 @@ const PORT = process.env.PORT || 3000;
 
 const API_URL = 'https://100amsterdam.stg.criticalasset.com/api';
 
-// ── Signal store (in-memory) ──────────────────────────────
-let signals = [];          // { id, text, workOrderId, createdAt }
-let cachedWorkOrders = []; // updated on each /api/work-orders fetch
+// ── In-memory stores ─────────────────────────────────────
+let signals = [];           // { id, text, workOrderId, createdAt }
+let cachedWorkOrders = [];  // updated on each /api/work-orders fetch
+let closures = {};          // { [workOrderId]: 'resolved'|'still-happening'|'worse' }
+
+// ── Anthropic prompt (server-side only) ───────────────────
+const STRUCTURE_SIGNAL_SYSTEM = `You are an expert building-operations triage assistant. A field student has observed an issue tied to a maintenance work order. Analyze their observation in the context of the work order and return ONLY a valid JSON object — no prose, no markdown fences. Use exactly these fields:
+{
+  "issueType": "short category label",
+  "location": "where the issue is",
+  "assetCategory": "type of asset or equipment involved",
+  "severity": "critical|high|medium|low",
+  "urgency": "immediate|within-24h|within-week|routine",
+  "affectedUsers": "who is impacted",
+  "evidenceQuality": "strong|adequate|weak",
+  "likelyRootCauses": ["cause 1", "cause 2"],
+  "missingInformation": ["item 1", "item 2"],
+  "followUpQuestions": ["question 1", "question 2"],
+  "complianceImplications": "frame as: this issue touches <inspection or code> requirement",
+  "suggestedNextAction": "specific immediate next step",
+  "studentStatusMessage": "friendly one-sentence acknowledgment for the student",
+  "closureVerificationQuestion": "how to confirm the issue is resolved",
+  "confidenceNote": "what the AI is unsure about and what a human must verify"
+}`;
 
 const PRIORITY_RANK = { critical: 4, high: 3, medium: 2, low: 1 };
 
@@ -169,6 +190,86 @@ app.get('/api/work-orders', async (req, res) => {
     console.error('[work-orders] caught exception:', err.stack || err.message);
     return res.status(500).json({ error: err.message });
   }
+});
+
+// ── AI field-signal route ─────────────────────────────────
+
+app.post('/api/structure-signal', async (req, res) => {
+  try {
+    const { workOrder, observation } = req.body ?? {};
+
+    if (!observation || typeof observation !== 'string' || !observation.trim()) {
+      return res.status(400).json({ error: 'observation is required' });
+    }
+    if (!process.env.ANTHROPIC_API_KEY) {
+      return res.status(500).json({ error: 'ANTHROPIC_API_KEY is not set in .env' });
+    }
+
+    const wo = workOrder ?? {};
+    const userMessage =
+      `WORK ORDER CONTEXT:\n` +
+      `Title: ${wo.title || 'Unknown'}\n` +
+      `Description: ${wo.description || 'None'}\n` +
+      `Severity: ${wo.severity || 'Unknown'}\n` +
+      `Priority: ${wo.priority || 'Unknown'}\n` +
+      `Stage: ${wo.status || 'Unknown'}\n` +
+      `Location: ${wo.locationName || 'Unknown'}\n` +
+      `Asset: ${wo.assetName || 'Unknown'}\n\n` +
+      `STUDENT OBSERVATION:\n${observation.trim()}`;
+
+    const aiRes = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-5',
+        max_tokens: 1024,
+        system: STRUCTURE_SIGNAL_SYSTEM,
+        messages: [{ role: 'user', content: userMessage }],
+      }),
+    });
+
+    if (!aiRes.ok) {
+      const body = await aiRes.text().catch(() => '(unreadable)');
+      console.error(`[structure-signal] Anthropic ${aiRes.status}:`, body);
+      return res.status(502).json({ error: `Anthropic API error: ${aiRes.status}`, detail: body });
+    }
+
+    const aiPayload = await aiRes.json();
+    const rawText = aiPayload.content?.[0]?.text ?? '';
+
+    // Strip any stray markdown fences the model may have added
+    const cleaned = rawText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+
+    try {
+      const structured = JSON.parse(cleaned);
+      return res.json({ ok: true, structured });
+    } catch (parseErr) {
+      console.error('[structure-signal] JSON parse failed. Raw:', rawText);
+      return res.json({ ok: false, raw: rawText, parseError: parseErr.message });
+    }
+  } catch (err) {
+    console.error('[structure-signal] exception:', err.stack || err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Closure routes ────────────────────────────────────────
+
+app.get('/api/closures', (_req, res) => {
+  res.json(closures);
+});
+
+app.post('/api/closure', (req, res) => {
+  const { workOrderId, status } = req.body ?? {};
+  const VALID = new Set(['resolved', 'still-happening', 'worse']);
+  if (!workOrderId) return res.status(400).json({ error: 'workOrderId is required' });
+  if (!VALID.has(status)) return res.status(400).json({ error: 'status must be resolved, still-happening, or worse' });
+  closures[workOrderId] = status;
+  return res.json({ ok: true, workOrderId, status });
 });
 
 // ── Signal routes ─────────────────────────────────────────
