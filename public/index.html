@@ -291,6 +291,59 @@
     @keyframes spin { to { transform: rotate(360deg); } }
 
     #count-row { font-size: 13px; color: var(--muted); padding: 0 28px 10px; }
+
+    /* ── Signal badges & observations ── */
+    .signal-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      background: rgba(20,184,166,0.15);
+      color: #2dd4bf;
+      font-size: 10px;
+      font-weight: 700;
+      padding: 1px 6px;
+      border-radius: 4px;
+      margin-left: 6px;
+      vertical-align: middle;
+    }
+    .obs-list { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+    .obs-item {
+      background: rgba(255,255,255,0.04);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 10px;
+      font-size: 13px;
+      line-height: 1.4;
+    }
+    .obs-time { font-size: 11px; color: var(--muted); margin-top: 3px; }
+    .obs-form { display: flex; gap: 8px; margin-top: 12px; }
+    .obs-input {
+      flex: 1;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 7px 10px;
+      border-radius: 7px;
+      font-size: 13px;
+      outline: none;
+      min-width: 0;
+    }
+    .obs-input:focus { border-color: var(--accent); }
+    .obs-btn {
+      background: var(--accent);
+      border: none;
+      color: #fff;
+      padding: 7px 14px;
+      border-radius: 7px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .obs-btn:hover { background: #4f52d9; }
+    .obs-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .obs-error { font-size: 12px; color: #f87171; margin-top: 6px; min-height: 16px; }
   </style>
 </head>
 <body>
@@ -351,13 +404,14 @@
         <th>Title</th>
         <th>Status</th>
         <th>Priority</th>
+        <th>Asset</th>
         <th>Severity</th>
         <th>Location</th>
         <th>Due Date</th>
       </tr>
     </thead>
     <tbody id="wo-tbody">
-      <tr><td colspan="6">
+      <tr><td colspan="7">
         <div class="state-box">
           <div class="spinner"></div>
           <p>Loading work orders…</p>
@@ -380,24 +434,46 @@
 
   let allOrders = [];  // normalized
   let selectedId = null;
+  let allSignals = [];
+  let signalsByWoId = {};
+
+  function buildSignalMap() {
+    signalsByWoId = {};
+    allSignals.forEach(s => {
+      (signalsByWoId[s.workOrderId] ??= []).push(s);
+    });
+  }
+
+  async function loadSignals() {
+    try {
+      const res = await fetch('/api/signals');
+      if (!res.ok) return;
+      allSignals = await res.json();
+      buildSignalMap();
+    } catch (_) { /* non-critical */ }
+  }
 
   // ── Normalizer — maps raw API shape to stable UI fields ───
-  //   endDate   → dueDate  (API uses endDate, not dueDate)
+  //   endDate             → dueDate  (API uses endDate, not dueDate)
   //   workOrderStage.name → status
   //   executionPriority   → priority
-  //   asset / assignee not available on this API schema
+  //   workOrderAssets[0]  → assetName / assetDescription (plain list, no nodes wrapper)
 
   function normalizeWorkOrder(raw) {
+    const firstAsset = raw.workOrderAssets?.[0]?.asset ?? null;
     return {
-      id:              raw.id,
-      title:           raw.title,
-      description:     raw.description,
-      severity:        raw.severity ?? '',
-      status:          raw.workOrderStage?.name ?? '',
-      priority:        raw.executionPriority ?? '',
-      dueDate:         raw.endDate ? new Date(Number(raw.endDate)) : null,
-      locationName:    raw.location?.locationName ?? '',
-      locationAddress: raw.location?.address ?? '',
+      id:               raw.id,
+      title:            raw.title,
+      description:      raw.description,
+      severity:         raw.severity ?? '',
+      status:           raw.workOrderStage?.name ?? '',
+      priority:         raw.executionPriority ?? '',
+      dueDate:          raw.endDate ? new Date(Number(raw.endDate)) : null,
+      locationName:     raw.location?.locationName ?? '',
+      locationAddress:  raw.location?.address ?? '',
+      assetName:        firstAsset?.name ?? '',
+      assetDescription: firstAsset?.description ?? '',
+      assetId:          firstAsset?.id ?? '',
     };
   }
 
@@ -503,7 +579,7 @@
       : '';
 
     if (!filtered.length) {
-      tbody.innerHTML = `<tr><td colspan="6"><div class="state-box"><div class="icon">🔍</div><p>No work orders match the current filters.</p></div></td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="7"><div class="state-box"><div class="icon">🔍</div><p>No work orders match the current filters.</p></div></td></tr>`;
       return;
     }
 
@@ -518,9 +594,11 @@
         <td class="td-title">
           ${escHtml(wo.title || '—')}
           ${overdue ? '<span class="overdue-badge">OVERDUE</span>' : ''}
+          ${(signalsByWoId[wo.id] || []).length ? `<span class="signal-badge">&#9679; ${signalsByWoId[wo.id].length}</span>` : ''}
         </td>
         <td><span class="status ${stCls}">${escHtml(wo.status || '—')}</span></td>
         <td><span class="priority ${priNorm}">${escHtml(wo.priority || '—')}</span></td>
+        <td>${escHtml(wo.assetName || '—')}</td>
         <td>${escHtml(wo.severity || '—')}</td>
         <td>${escHtml(wo.locationName || '—')}</td>
         <td class="${dueCls}">${fmtDate(wo.dueDate)}</td>
@@ -533,6 +611,14 @@
   }
 
   // ── Detail Panel ──────────────────────────────────────────
+
+  function obsListHtml(woId) {
+    const list = signalsByWoId[woId] || [];
+    if (!list.length) return '<p style="color:var(--muted);font-size:13px">No observations yet.</p>';
+    return list.map(s =>
+      `<div class="obs-item"><div>${escHtml(s.text)}</div><div class="obs-time">${new Date(s.createdAt).toLocaleString()}</div></div>`
+    ).join('');
+  }
 
   function openPanel(id) {
     const wo = allOrders.find(w => w.id === id);
@@ -561,13 +647,68 @@
       </div>
 
       <div class="detail-section">
+        <h3>Asset</h3>
+        <div class="detail-row"><span class="dk">Name</span><span class="dv">${escHtml(wo.assetName || '—')}</span></div>
+        <div class="detail-row"><span class="dk">Description</span><span class="dv">${escHtml(wo.assetDescription || '—')}</span></div>
+        <div class="detail-row"><span class="dk">Asset ID</span><span class="dv">${escHtml(wo.assetId || '—')}</span></div>
+      </div>
+
+      <div class="detail-section">
         <h3>Location</h3>
         <div class="detail-row"><span class="dk">Name</span><span class="dv">${escHtml(wo.locationName || '—')}</span></div>
         <div class="detail-row"><span class="dk">Address</span><span class="dv">${escHtml(wo.locationAddress || '—')}</span></div>
       </div>
+
+      <div class="detail-section">
+        <h3>Field Observations</h3>
+        <div class="obs-list" id="obs-list"></div>
+        <div class="obs-form">
+          <input class="obs-input" id="obs-input" type="text" maxlength="200"
+                 placeholder="Add observation (max 200 chars)…" autocomplete="off" />
+          <button class="obs-btn" id="obs-btn">Add</button>
+        </div>
+        <div class="obs-error" id="obs-error"></div>
+      </div>
     `;
 
+    document.getElementById('obs-list').innerHTML = obsListHtml(wo.id);
     document.getElementById('detail-overlay').classList.add('open');
+
+    const input  = document.getElementById('obs-input');
+    const btn    = document.getElementById('obs-btn');
+    const errEl  = document.getElementById('obs-error');
+    btn.addEventListener('click', () => submitSignal(wo.id, input, btn, errEl));
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') btn.click(); });
+  }
+
+  async function submitSignal(workOrderId, input, btn, errEl) {
+    const text = input.value.trim();
+    errEl.textContent = '';
+    if (!text) { errEl.textContent = 'Observation cannot be empty.'; return; }
+
+    btn.disabled = true;
+    try {
+      const res = await fetch('/api/signals', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, workOrderId }),
+      });
+      const data = await res.json();
+      if (!res.ok) { errEl.textContent = data.error || 'Failed to save.'; return; }
+
+      allSignals.push(data.signal);
+      buildSignalMap();
+      input.value = '';
+
+      const list = document.getElementById('obs-list');
+      if (list) list.innerHTML = obsListHtml(workOrderId);
+
+      renderTable(); // refreshes signal badge on the row without closing panel
+    } catch (_) {
+      errEl.textContent = 'Network error — try again.';
+    } finally {
+      btn.disabled = false;
+    }
   }
 
   function closePanel() {
@@ -597,6 +738,7 @@
       }
       const data = await res.json();
       allOrders = data.map(normalizeWorkOrder);
+      await loadSignals();
 
       updateCounters(allOrders);
       populateFilters(allOrders);
@@ -607,7 +749,7 @@
         `Updated ${now.toLocaleTimeString()}`;
     } catch (err) {
       document.getElementById('wo-tbody').innerHTML = `
-        <tr><td colspan="6"><div class="state-box error">
+        <tr><td colspan="7"><div class="state-box error">
           <div class="icon">⚠️</div>
           <p>${escHtml(err.message)}</p>
         </div></td></tr>`;

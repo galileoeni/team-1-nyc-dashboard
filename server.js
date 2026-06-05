@@ -1,11 +1,29 @@
 require('dotenv').config();
 const express = require('express');
 const path = require('path');
+const { randomUUID } = require('crypto');
 
 const app = express();
+app.use(express.json());
 const PORT = process.env.PORT || 3000;
 
 const API_URL = 'https://100amsterdam.stg.criticalasset.com/api';
+
+// ── Signal store (in-memory) ──────────────────────────────
+let signals = [];          // { id, text, workOrderId, createdAt }
+let cachedWorkOrders = []; // updated on each /api/work-orders fetch
+
+const PRIORITY_RANK = { critical: 4, high: 3, medium: 2, low: 1 };
+
+function findNearestOpenWorkOrder() {
+  const open = cachedWorkOrders.filter(wo =>
+    (wo.workOrderStage?.name || '').toLowerCase() === 'to do'
+  );
+  const pool = open.length ? open : cachedWorkOrders;
+  return pool.slice().sort((a, b) =>
+    (PRIORITY_RANK[b.executionPriority] || 0) - (PRIORITY_RANK[a.executionPriority] || 0)
+  )[0] ?? null;
+}
 
 // In-memory token cache — never exposed to the client
 let tokenCache = { token: null, expiresAt: 0 };
@@ -71,6 +89,7 @@ const WORK_ORDERS_QUERY = `
         workOrderStage { name }
         endDate
         location { id locationName address }
+        workOrderAssets { asset { id name description status } }
       }
     }
   }
@@ -144,11 +163,53 @@ app.get('/api/work-orders', async (req, res) => {
     }
 
     const workOrders = payload?.data?.workOrders?.nodes ?? [];
+    cachedWorkOrders = workOrders;
     return res.json(workOrders);
   } catch (err) {
     console.error('[work-orders] caught exception:', err.stack || err.message);
     return res.status(500).json({ error: err.message });
   }
+});
+
+// ── Signal routes ─────────────────────────────────────────
+
+app.get('/api/signals', (_req, res) => {
+  res.json(signals);
+});
+
+app.post('/api/signals', (req, res) => {
+  const { text, workOrderId } = req.body ?? {};
+
+  if (!text || typeof text !== 'string' || !text.trim()) {
+    return res.status(400).json({ error: 'text is required' });
+  }
+  const trimmed = text.trim();
+  if (trimmed.length > 200) {
+    return res.status(400).json({ error: 'text must be under 200 characters' });
+  }
+
+  let targetId = workOrderId || null;
+  if (!targetId) {
+    const nearest = findNearestOpenWorkOrder();
+    if (!nearest) {
+      return res.status(400).json({ error: 'No work orders cached — load the dashboard first' });
+    }
+    targetId = nearest.id;
+  }
+
+  const signal = {
+    id: randomUUID(),
+    text: trimmed,
+    workOrderId: targetId,
+    createdAt: new Date().toISOString(),
+  };
+  signals.push(signal);
+
+  const wo = cachedWorkOrders.find(w => w.id === targetId);
+  return res.status(201).json({
+    signal,
+    attachedTo: wo ? { id: wo.id, title: wo.title } : { id: targetId },
+  });
 });
 
 app.listen(PORT, () => {
