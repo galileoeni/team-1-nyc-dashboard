@@ -351,7 +351,7 @@
         <th>Title</th>
         <th>Status</th>
         <th>Priority</th>
-        <th>Asset</th>
+        <th>Severity</th>
         <th>Location</th>
         <th>Due Date</th>
       </tr>
@@ -376,28 +376,59 @@
 </div>
 
 <script>
-  const CLOSED_STATUSES = new Set(['CLOSED', 'COMPLETE', 'COMPLETED', 'RESOLVED', 'DONE']);
-  const PRIORITY_SCORE  = { CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1 };
+  const PRIORITY_SCORE = { CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1 };
 
-  let allOrders = [];
+  let allOrders = [];  // normalized
   let selectedId = null;
+
+  // ── Normalizer — maps raw API shape to stable UI fields ───
+  //   endDate   → dueDate  (API uses endDate, not dueDate)
+  //   workOrderStage.name → status
+  //   executionPriority   → priority
+  //   asset / assignee not available on this API schema
+
+  function normalizeWorkOrder(raw) {
+    return {
+      id:              raw.id,
+      title:           raw.title,
+      description:     raw.description,
+      severity:        raw.severity ?? '',
+      status:          raw.workOrderStage?.name ?? '',
+      priority:        raw.executionPriority ?? '',
+      dueDate:         raw.endDate ? new Date(Number(raw.endDate)) : null,
+      locationName:    raw.location?.locationName ?? '',
+      locationAddress: raw.location?.address ?? '',
+    };
+  }
 
   // ── Helpers ──────────────────────────────────────────────
 
+  function isClosedStatus(status) {
+    return /complete|closed|resolved|done|cancelled/i.test(status || '');
+  }
+
   function isOverdue(wo) {
     if (!wo.dueDate) return false;
-    if (CLOSED_STATUSES.has((wo.status || '').toUpperCase())) return false;
-    return new Date(wo.dueDate) < new Date();
+    if (isClosedStatus(wo.status)) return false;
+    return wo.dueDate < new Date();
   }
 
   function normalise(str) {
     return (str || '').toUpperCase().replace(/[\s-]/g, '_');
   }
 
-  function fmtDate(dateStr) {
-    if (!dateStr) return '—';
-    const d = new Date(dateStr);
-    if (isNaN(d)) return dateStr;
+  // Maps any real stage name string to one of the four CSS badge classes
+  function statusClass(status) {
+    const n = normalise(status);
+    if (/^TO_DO$|^OPEN$|^NEW$|^NOT_STARTED$/.test(n)) return 'OPEN';
+    if (/IN_PROGRESS|ACTIVE|WORKING/.test(n))          return 'IN_PROGRESS';
+    if (/COMPLETE|CLOSED|RESOLVED|DONE|CANCEL/.test(n)) return 'CLOSED';
+    return 'PENDING';
+  }
+
+  function fmtDate(d) {
+    if (!d) return '—';
+    if (isNaN(d)) return '—';
     return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
   }
 
@@ -412,7 +443,7 @@
       if (bO !== aO) return bO - aO;
       const ps = priorityScore(b) - priorityScore(a);
       if (ps !== 0) return ps;
-      if (a.dueDate && b.dueDate) return new Date(a.dueDate) - new Date(b.dueDate);
+      if (a.dueDate && b.dueDate) return a.dueDate - b.dueDate;
       return 0;
     });
   }
@@ -420,20 +451,19 @@
   // ── Counters ──────────────────────────────────────────────
 
   function updateCounters(orders) {
-    const norm = s => normalise(s);
     document.getElementById('cnt-overdue').textContent =
       orders.filter(isOverdue).length;
     document.getElementById('cnt-open').textContent =
-      orders.filter(w => norm(w.status) === 'OPEN').length;
+      orders.filter(w => /^to\s*do$|^open$|^new$|^not\s*started$/i.test(w.status)).length;
     document.getElementById('cnt-inprogress').textContent =
-      orders.filter(w => ['IN_PROGRESS', 'INPROGRESS'].includes(norm(w.status))).length;
+      orders.filter(w => /in\s*progress|in\s*work|active/i.test(w.status)).length;
     document.getElementById('cnt-total').textContent = orders.length;
   }
 
   // ── Filters ──────────────────────────────────────────────
 
   function populateFilters(orders) {
-    const statuses  = [...new Set(orders.map(w => w.status).filter(Boolean))];
+    const statuses   = [...new Set(orders.map(w => w.status).filter(Boolean))];
     const priorities = [...new Set(orders.map(w => w.priority).filter(Boolean))];
 
     const sSel = document.getElementById('filter-status');
@@ -465,7 +495,7 @@
 
   function renderTable() {
     const filtered = sortOrders(getFiltered());
-    const tbody = document.getElementById('wo-tbody');
+    const tbody    = document.getElementById('wo-tbody');
     const countRow = document.getElementById('count-row');
 
     countRow.textContent = filtered.length
@@ -478,21 +508,21 @@
     }
 
     tbody.innerHTML = filtered.map(wo => {
-      const overdue   = isOverdue(wo);
-      const norm      = normalise(wo.priority);
-      const statusNorm = normalise(wo.status);
-      const dueCls    = overdue ? 'td-due overdue' : 'td-due';
-      const rowCls    = [overdue ? 'is-overdue' : '', selectedId === wo.id ? 'selected' : ''].join(' ').trim();
+      const overdue = isOverdue(wo);
+      const priNorm = normalise(wo.priority);
+      const stCls   = statusClass(wo.status);
+      const dueCls  = overdue ? 'td-due overdue' : 'td-due';
+      const rowCls  = [overdue ? 'is-overdue' : '', selectedId === wo.id ? 'selected' : ''].join(' ').trim();
 
       return `<tr class="${rowCls}" data-id="${wo.id}">
         <td class="td-title">
           ${escHtml(wo.title || '—')}
           ${overdue ? '<span class="overdue-badge">OVERDUE</span>' : ''}
         </td>
-        <td><span class="status ${statusNorm}">${escHtml(wo.status || '—')}</span></td>
-        <td><span class="priority ${norm}">${escHtml(wo.priority || '—')}</span></td>
-        <td>${escHtml(wo.asset?.name || '—')}</td>
-        <td>${escHtml(wo.location?.locationName || '—')}</td>
+        <td><span class="status ${stCls}">${escHtml(wo.status || '—')}</span></td>
+        <td><span class="priority ${priNorm}">${escHtml(wo.priority || '—')}</span></td>
+        <td>${escHtml(wo.severity || '—')}</td>
+        <td>${escHtml(wo.locationName || '—')}</td>
         <td class="${dueCls}">${fmtDate(wo.dueDate)}</td>
       </tr>`;
     }).join('');
@@ -510,42 +540,30 @@
     selectedId = id;
     renderTable();
 
-    const overdue    = isOverdue(wo);
-    const norm       = normalise(wo.priority);
-    const statusNorm = normalise(wo.status);
+    const overdue = isOverdue(wo);
+    const priNorm = normalise(wo.priority);
+    const stCls   = statusClass(wo.status);
 
     document.getElementById('panel-content').innerHTML = `
       <div class="panel-title">${escHtml(wo.title || 'Work Order')}</div>
       <div class="panel-badges">
-        <span class="status ${statusNorm}">${escHtml(wo.status || '—')}</span>
-        <span class="priority ${norm}">${escHtml(wo.priority || '—')}</span>
+        <span class="status ${stCls}">${escHtml(wo.status || '—')}</span>
+        <span class="priority ${priNorm}">${escHtml(wo.priority || '—')}</span>
         ${overdue ? '<span class="priority CRITICAL">OVERDUE</span>' : ''}
       </div>
 
       <div class="detail-section">
         <h3>Work Order</h3>
         <div class="detail-row"><span class="dk">ID</span><span class="dv">${escHtml(wo.id)}</span></div>
-        <div class="detail-row"><span class="dk">Created</span><span class="dv">${fmtDate(wo.createdAt)}</span></div>
+        <div class="detail-row"><span class="dk">Severity</span><span class="dv">${escHtml(wo.severity || '—')}</span></div>
         <div class="detail-row"><span class="dk">Due Date</span><span class="dv ${overdue ? 'red' : ''}">${fmtDate(wo.dueDate)}</span></div>
-      </div>
-
-      <div class="detail-section">
-        <h3>Asset</h3>
-        <div class="detail-row"><span class="dk">Name</span><span class="dv">${escHtml(wo.asset?.name || '—')}</span></div>
-        <div class="detail-row"><span class="dk">Category</span><span class="dv">${escHtml(wo.asset?.category || '—')}</span></div>
-        <div class="detail-row"><span class="dk">Asset ID</span><span class="dv">${escHtml(wo.asset?.id || '—')}</span></div>
+        <div class="detail-row"><span class="dk">Description</span><span class="dv">${escHtml(wo.description || '—')}</span></div>
       </div>
 
       <div class="detail-section">
         <h3>Location</h3>
-        <div class="detail-row"><span class="dk">Name</span><span class="dv">${escHtml(wo.location?.locationName || '—')}</span></div>
-        <div class="detail-row"><span class="dk">Address</span><span class="dv">${escHtml(wo.location?.address || '—')}</span></div>
-      </div>
-
-      <div class="detail-section">
-        <h3>Assignee</h3>
-        <div class="detail-row"><span class="dk">Name</span><span class="dv">${escHtml(wo.assignee?.name || 'Unassigned')}</span></div>
-        <div class="detail-row"><span class="dk">ID</span><span class="dv">${escHtml(wo.assignee?.id || '—')}</span></div>
+        <div class="detail-row"><span class="dk">Name</span><span class="dv">${escHtml(wo.locationName || '—')}</span></div>
+        <div class="detail-row"><span class="dk">Address</span><span class="dv">${escHtml(wo.locationAddress || '—')}</span></div>
       </div>
     `;
 
@@ -578,7 +596,7 @@
         throw new Error(err.error || `HTTP ${res.status}`);
       }
       const data = await res.json();
-      allOrders = data;
+      allOrders = data.map(normalizeWorkOrder);
 
       updateCounters(allOrders);
       populateFilters(allOrders);
